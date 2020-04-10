@@ -8,3 +8,6 @@ build
 src/main/resources 
 tokens
 logs
+bin
+gradle
+

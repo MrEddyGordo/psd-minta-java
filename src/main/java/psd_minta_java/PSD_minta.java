@@ -6,6 +6,7 @@ import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
@@ -37,9 +38,12 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.TimeZone;
+import java.util.Scanner;
+
 
 import org.apache.logging.log4j.*;
 import java.util.concurrent.TimeUnit;
+
 
 public class PSD_minta {
 	private static final Logger LOGGER = LogManager.getLogger(PSD_minta.class);
@@ -80,14 +84,19 @@ public class PSD_minta {
     
     
     
-    //mintageneráló
-    //Event ArrayListet ad vissza
-    //Kezdő időponttólponttól a végpontig a minta szerint
-    //GMT szerinti unix timeout eszik 
-    //Eventeket hoz tesz a listába
-	public static ArrayList<Event> PatternGen(long startTime, long origEnd) throws Exception {
+
+    /**
+     * Egy ArrayList-et ad vissza, amiben egy személy számára benne lesz a generált minta.
+     * @param startTime unix time innentől
+     * @param origEnd unix time idáig
+     * @param numberOfPeople ennyi személy van összesen
+     * @return
+     * @throws Exception
+     */
+	public static ArrayList<Event> PatternGen(long startTime, long origEnd, int numberOfPeople) throws Exception {
 		
 		if(startTime < 1577746800000L) throw new Exception("2020 előtti a kezdődátum!");
+		if(numberOfPeople < 2) throw new Exception("Kettőnél több ember kell.");
 		
 		ArrayList<Event> ret = new ArrayList<Event>();
 		
@@ -112,67 +121,131 @@ public class PSD_minta {
 				startTime += 24 * 60 * 60 * 1000;
 			}
 			
-			//12 óra + 7 nap hozzáadása
-			startTime += (12 + 7 * 24)  * 60 * 60 * 1000;
+			//12 óra + 7 nap hozzáadása 6 ember esetén, +8 nap lenne, de fent már hozzáad 1 napot a 2 éjjel végén.
+			//startTime += (12 + 7 * 24)  * 60 * 60 * 1000;
+			//3-nál 12 óra + 2 nap, 4-nél 12 óra + 4 nap
+			//5: 12 6, 6: 12 8,
+			// Tehát: -12 óra + (emberszám - 2) * 2 nap
 
+			startTime += (-12 + ((numberOfPeople - 2) * 48)) * 60 * 60 * 1000;
 
 		}
 
 		return ret;
 	}
 	
-	//Linux Time-ot millisecben megadjuk, ebből generál egy Event-et.
+
+	/**
+	 * Egy darab Event objektumot generál, "n" summaryvel, 12 órával későbbi endtime-mal.
+	 * @param shiftStartTime  műszak kezdete Unix time szerint millisec-ben
+	 * @return Event
+	 */
 	public static Event eventGen(long shiftStartTime) {
-		
-		//Az óraátállítást azzal küszöböljük ki, hogy megkérdezzük mennyi a TimeZoneShift és annyit mindig kivonunk a kezdőidőpontból.
-		
-		DateTime startDateTime = new DateTime(shiftStartTime);		
+
+		// Az óraátállítást azzal küszöböljük ki, hogy megkérdezzük mennyi a
+		// TimeZoneShift és annyit mindig kivonunk a kezdőidőpontból.
+
+		DateTime startDateTime = new DateTime(shiftStartTime);
 		int tzs = startDateTime.getTimeZoneShift();
 		long milliSecShift = tzs * 60 * 1000;
 		shiftStartTime -= milliSecShift;
 		startDateTime = new DateTime(shiftStartTime);
-		
+
 		long endTime = shiftStartTime + 12 * 60 * 60 * 1000;
 		DateTime endDateTime = new DateTime(endTime);
-		
+
 		Event ret = new Event().setSummary("n");
 		EventDateTime start = new EventDateTime().setDateTime(startDateTime);
 		ret.setStart(start);
 
 		EventDateTime end = new EventDateTime().setDateTime(endDateTime);
 		ret.setEnd(end);
-		
-		
+
 		return ret;
 	}
     
-	public static void deleteEvents(String calendarId, Calendar service, long startTime, long origEnd) throws Exception {
+	/**
+	 * "n" summaryjű eseményeket töröl egy adott ID-jű naptárból a kezdő- és végidőpont között.
+	 * 
+	 * @param calendarId  
+	 * @param service  authorized API client service
+	 * @param startTime
+	 * @param origEnd
+	 * @throws Exception
+	 */
+	public static void deleteEvents(String calendarId, String owner, Calendar service, long startTime, long origEnd)
+			throws Exception {
 
+		DateTime timeFrom = new DateTime(startTime);
+		DateTime timeMax = new DateTime(origEnd);
+		Events events = service.events().list(calendarId).setTimeMin(timeFrom).setOrderBy("startTime")
+				.setSingleEvents(true).setTimeMax(timeMax).execute();
+		List<Event> items = events.getItems();
+		if (items.isEmpty()) {
+			LOGGER.info(owner + " naptárában nincsen törlendő esemény.");
+		} else {
+			LOGGER.info(owner + " naptárából a következőket töröljük.");
+			for (Event event : items) {
+				DateTime start = event.getStart().getDateTime();
+				if (start == null) {
+					start = event.getStart().getDate();
+				}
+				// System.out.printf("%s %s (%s) EventiD: %s\n",
+				// event.getOrganizer().getDisplayName(),event.getSummary(), start,
+				// event.getId());
+				
+				/*
+				 * Ha a try block túl gyorsan kommunikál és 403 "Rate Limit Exceeded" Exceptiont dob a Google,
+				 * akkor a catch elkapja és vár tempD * 1 sec-nyi időt, majd újrapróbálja a try-t.
+				 */
+				int tempD = 0;
 
-        DateTime timeFrom = new DateTime(startTime);
-        DateTime timeMax = new DateTime(origEnd);
-        Events events = service.events().list(calendarId)
-                //.setMaxResults(10)
-                .setTimeMin(timeFrom)
-                .setOrderBy("startTime")
-                .setSingleEvents(true)
-                .setTimeMax(timeMax)
-                .execute();
-        List<Event> items = events.getItems();
-        if (items.isEmpty()) {
-            LOGGER.info("No upcoming events found.");
-        } else {
-            LOGGER.info("Upcoming events marked for deletion: ");
-            for (Event event : items) {
-                DateTime start = event.getStart().getDateTime();
-                if (start == null) {
-                    start = event.getStart().getDate();
-                }
-                System.out.printf("%s %s (%s) EventiD: %s\n", event.getOrganizer().getDisplayName(),event.getSummary(), start, event.getId());
-                LOGGER.info("Törlés: " + event.getOrganizer().getDisplayName() + " " + event.getSummary() + " Kezdet: " +  start + " EventId: " + event.getId());
-                if(event.getSummary().equals("n")) service.events().delete(calendarId, event.getId()).execute();                 
-            }
-        }
+				do {
+					try {
+						tempD++;
+						if (event.getSummary().equals("n"))
+							service.events().delete(calendarId, event.getId()).execute();
+						tempD = 0;
+						LOGGER.info("Törlés: " + event.getOrganizer().getDisplayName() + " " + event.getSummary()
+								+ " Kezdet: " + start + " EventId: " + event.getId());
+					} catch (GoogleJsonResponseException e) {
+
+						if (e.getStatusCode() == 403) {
+							int waitFor = 1000 * tempD;
+							TimeUnit.MILLISECONDS.sleep(waitFor);
+							LOGGER.info(e);
+							LOGGER.info("Várakozás " + waitFor + "msec ideig.");
+						}
+					}
+
+				} while (tempD > 0);
+			}
+		}
+	}
+	
+	/**
+	 * A "naptarak"-ban lévő hasmmapből a nevSorrend sorrendben minden eseményt töröl az adott időszakban.
+	 * @param service
+	 * @param naptarak
+	 * @param nevSorrend
+	 * @param startTime
+	 * @param endTime
+	 * @throws Exception
+	 */
+	public static void deleteWholeHalfYear(Calendar service, HashMap<String, String> naptarak,
+			ArrayList<String> nevSorrend, long startTime, long endTime) throws Exception {
+		String calendarId;
+		String owner;
+		for (int j = 0; j < nevSorrend.size(); j++) {
+
+			// public static void deleteEvents(String calendarId, Calendar service, long
+			// startTime, long origEnd)
+			owner = nevSorrend.get(j);
+			calendarId = (String) naptarak.get(owner);
+			deleteEvents(calendarId, owner, service, startTime, endTime);
+
+		}
+
 	}
 
     public static void main(String... args) throws IOException, GeneralSecurityException {
@@ -187,33 +260,14 @@ public class PSD_minta {
                 .build();
 
         
-//        String calendarId = "or0dcbqcn9ih7qd385m6s6n87k@group.calendar.google.com";
-//        // List the next 10 events from the primary calendar.
-//        DateTime now = new DateTime(System.currentTimeMillis());
-//        Events events = service.events().list(calendarId)
-//                //.setMaxResults(10)
-//                //.setTimeMin(now)
-//                .setOrderBy("startTime")
-//                .setSingleEvents(true)
-//                .execute();
-//        List<Event> items = events.getItems();
-//        if (items.isEmpty()) {
-//            System.out.println("No upcoming events found.");
-//        } else {
-//            System.out.println("Upcoming events");
-//            for (Event event : items) {
-//                DateTime start = event.getStart().getDateTime();
-//                if (start == null) {
-//                    start = event.getStart().getDate();
-//                }
-//                System.out.printf("%s (%s) EventiD: %s\n", event.getSummary(), start, event.getId());
-//            }
-//        }
+        CalendarListEntry MycalendarListEntry = service.calendarList().get("primary").execute();
+        String accName = MycalendarListEntry.getSummary();
         
         HashMap<String,String> naptarak = new HashMap<String,String>();
+        
 
      // Iterate through entries in calendar list
-     // Megnézzük milyen nevű naptárak léteznek
+     // Megnézzük milyen nevű naptárak léteznek, eltároljuk a naptárnév és ID párosokat.
         String pageToken = null;
         do {
           CalendarList calendarList = service.calendarList().list().setPageToken(pageToken).execute();
@@ -267,65 +321,73 @@ public class PSD_minta {
         
         //System.out.println(nevSorrend.size());
         
-        long twoDayInMilliSec = 2 * 24 * 60 * 60 * 1000; 
-        
+//        long twoDaysInMilliSec = 2 * 24 * 60 * 60 * 1000; 
+//        
+//        int tempN = 0;
 //        for (int i = 0; i < nevSorrend.size(); i++) {
 //					
 //        try {
-//			for(Event myEvent : PatternGen(1578290400000L + twoDayInMilliSec * i, 1593561600000L)){
+//			for(Event myEvent : PatternGen(1578290400000L + twoDaysInMilliSec * i, 1593561600000L, nevSorrend.size())){
+//				
+//			do {
 //				
 //				try {
-//				
+//					tempN++;
 //					if(myEvent.getId() == null) myEvent = service.events().insert(naptarak.get(nevSorrend.get(i)), myEvent).execute();
-//					TimeUnit.MILLISECONDS.sleep(50);        
-//				} catch (Exception e) {
-//					TimeUnit.SECONDS.sleep(10);
-//					System.out.println(e);
-//					LOGGER.error(e);
-//					if(myEvent.getId() == null) myEvent = service.events().insert(naptarak.get(nevSorrend.get(i)), myEvent).execute();
-//					
-//				}
+//					tempN = 0;
 //					LOGGER.info("Event Created in: " +nevSorrend.get(i) + " , " + myEvent.getStart().getDateTime() + " EventId: " + myEvent.getId());
+//					//TimeUnit.MILLISECONDS.sleep(50); 
+//				} catch (GoogleJsonResponseException e) {
+//					System.out.println(e.getStatusCode());
+//					System.out.println(e.getMessage());
+//					if(e.getStatusCode() == 403) {
+//						int waitFor = 1000 * tempN;
+//						TimeUnit.MILLISECONDS.sleep(waitFor);
+//						LOGGER.info(e);
+//						LOGGER.info("Várakozás " + waitFor + "msec ideig.");
+//					}
+//				}
+//				catch (Exception e) {
+//					System.out.println(e);
+//					LOGGER.error(e);					
+//				}
+//					
+//			} while(tempN > 0);
+//					
 //			}
 //		} catch (Exception e) {
 //			System.out.println(e);
-//			//e.printStackTrace();
+//			LOGGER.error(e);
 //		}
-        
-        
-        
-//Ez a törlés: ***********************
-        
- //       for (int j = 0; j < nevSorrend.size(); j++) {
-			
-		
-        //public static void deleteEvents(String calendarId, Calendar service, long startTime, long origEnd)
-//        try {
-//        	deleteEvents(naptarak.get(nevSorrend.get(j)), service, 1578290400000L, 1593561600000L);
-//        } catch(Exception e) {
-//        	LOGGER.catching(e);
-//        	
-//        	
-//        	try {
-//        	TimeUnit.SECONDS.sleep(10);
-//            deleteEvents(naptarak.get(nevSorrend.get(j)), service, 1578290400000L, 1593561600000L);
-//        	} catch(Exception belso) {
-//        		System.out.println(belso);
-//        	}
-//        
-//        
-//        
-//        
-//        }  
 //        }
+
+        Scanner kbd = new Scanner (System.in);
         
-//***********************************
+        try {
+        	System.out.println("Fiók: " + accName);
+        	System.out.printf("Ténylegesen töröljünk minden 'n' eseményt minden naptárból a következő naptárakból: ");
+        	for (String nevOut : nevSorrend) {
+        		System.out.printf("%s ",nevOut);
+        	}
+        	System.out.printf("? (i / n) ");
+        	String answer = kbd.nextLine();
+        	if(answer.equals("i")) deleteWholeHalfYear(service, naptarak, nevSorrend,1578290400000L,1593561600000L);
+        	else {
+        		System.out.println("Megszakítás.");
+        		System.exit(0);
+        	}
+		} catch (Exception e) {
+			System.out.println(e);
+			LOGGER.error(e);
+		}
+        
+
+        
 
         LOGGER.trace("App futásának vége.");
+    }
 }
 
-    
-}
 
 
 

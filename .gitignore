@@ -5,7 +5,7 @@
 build
 
 # nem kell követni a credentialokat
-src/main/resources 
+src/main/resources/credentials.json 
 tokens
 logs
 bin

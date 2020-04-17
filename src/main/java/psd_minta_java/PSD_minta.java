@@ -232,21 +232,101 @@ public class PSD_minta {
 	 * @param endTime
 	 * @throws Exception
 	 */
-	public static void deleteWholeHalfYear(Calendar service, HashMap<String, String> naptarak,
+	public static void deleteBetweenForEveryone(Calendar service, HashMap<String, String> naptarak,
 			ArrayList<String> nevSorrend, long startTime, long endTime) throws Exception {
 		String calendarId;
 		String owner;
+		/*
+		 * Végigmegyünk mindenkin, aki a naptárakban benne van.
+		 */
 		for (int j = 0; j < nevSorrend.size(); j++) {
-
-			// public static void deleteEvents(String calendarId, Calendar service, long
-			// startTime, long origEnd)
 			owner = nevSorrend.get(j);
 			calendarId = (String) naptarak.get(owner);
 			deleteEvents(calendarId, owner, service, startTime, endTime);
-
 		}
 
 	}
+	
+	public static void askToDelete(String accName, Calendar service, HashMap<String, String> naptarak,
+			ArrayList<String> nevSorrend, long startTime, long endTime) throws Exception {
+        Scanner kbd = new Scanner (System.in);
+        
+        try {
+        	System.out.println("Fiók: " + accName);
+        	System.out.printf("Ténylegesen töröljünk a(z) " + accName + " fiókból minden 'n' eseményt a fenti időszakból az ÖSSZES naptárból: ");
+        	for (String nevOut : nevSorrend) {
+        		System.out.printf("%s ",nevOut);
+        	}
+        	System.out.printf("? (i / n) ");
+        	String answer = kbd.nextLine();
+        	if(answer.equals("i")) deleteBetweenForEveryone(service, naptarak, nevSorrend,startTime,endTime);
+        	else {
+        		System.out.println("Megszakítás.");
+        		System.exit(0);
+        	}
+		} catch (Exception e) {
+			System.out.println(e);
+			LOGGER.error(e);
+		}
+        
+        kbd.close();
+	}
+	
+	
+	public static void insertPattern(String accName, Calendar service, HashMap<String, String> naptarak,
+			ArrayList<String> nevSorrend, long startTime, long endTime) {
+    //feltoltjuk Event-ekkel a naptárakat az adott megfelelő sorrendben
+	Scanner kbd = new Scanner (System.in);
+	System.out.printf("Ténylegesen illeszük be a " + accName + " fiókba a mintát? ");
+	for (String nevOut : nevSorrend) {
+		System.out.printf("%s ",nevOut);
+	}
+	System.out.printf("? (i / n) ");
+	String answer = kbd.nextLine();
+	if(!answer.equals("i")) System.exit(0);
+    long twoDaysInMilliSec = 2 * 24 * 60 * 60 * 1000; 
+    
+    int tempN = 0;
+    for (int i = 0; i < nevSorrend.size(); i++) {
+				
+    try {
+    	//Ahanyadik a naptár, annyiszor 48 óra eltolás viszünk be a kezdőidőpontba.
+		for(Event myEvent : PatternGen(startTime + twoDaysInMilliSec * i, endTime, nevSorrend.size())){
+			
+		do {
+			
+			try {
+				tempN++;
+				if(myEvent.getId() == null) myEvent = service.events().insert(naptarak.get(nevSorrend.get(i)), myEvent).execute();
+				tempN = 0;
+				LOGGER.info("Event Created in: " +nevSorrend.get(i) + " , " + myEvent.getStart().getDateTime() + " EventId: " + myEvent.getId());
+				//TimeUnit.MILLISECONDS.sleep(50); 
+			} catch (GoogleJsonResponseException e) {
+				System.out.println(e.getStatusCode());
+				System.out.println(e.getMessage());
+				if(e.getStatusCode() == 403) {
+					int waitFor = 1000 * tempN;
+					TimeUnit.MILLISECONDS.sleep(waitFor);
+					LOGGER.info(e);
+					LOGGER.info("Várakozás " + waitFor + "msec ideig.");
+				}
+			}
+			catch (Exception e) {
+				System.out.println(e);
+				LOGGER.error(e);					
+			}
+				
+		} while(tempN > 0);
+				
+		}
+	} catch (Exception e) {
+		System.out.println(e);
+		LOGGER.error(e);
+	}
+    }
+    kbd.close();
+	}
+
 
     public static void main(String... args) throws IOException, GeneralSecurityException {
     	LOGGER.trace("-------------");
@@ -292,8 +372,22 @@ public class PSD_minta {
 //        Date and time (GMT): 2020. July 1., Wednesday 0:00:00
         
 
-        
+//        1593842400
+//        Is equivalent to:
+//        07/04/2020 @ 6:00am (UTC)
+//        1609459200
+//        Is equivalent to:
+//        01/01/2021 @ 12:00am (UTC)
+//        1593561600
+//        Is equivalent to:
+//        07/01/2020 @ 12:00am (UTC)
 
+        long startTime = 1593842400000L;
+        //long startTime = 1593561600000L;
+        long endTime = 1609459200000L;
+        
+        System.out.println("Kezdőidőpont: "+new DateTime(startTime));
+        System.out.println("Végidőpont: "+new DateTime(endTime));
         
         //Kell legyen pontosan ilyen nevű naptár
         //Ebben már számít a sorrend.
@@ -316,69 +410,16 @@ public class PSD_minta {
         	System.exit(0);
         }
         
-        //feltoltjuk Event-ekkel a naptárakat az adott megfelelő sorrendben
-        //Ahanyadik a naptár, annyiszor 48 óra eltolás viszünk be a kezdőidőpontba.
+        insertPattern(accName, service, naptarak, nevSorrend, startTime, endTime);
         
-        //System.out.println(nevSorrend.size());
-        
-//        long twoDaysInMilliSec = 2 * 24 * 60 * 60 * 1000; 
-//        
-//        int tempN = 0;
-//        for (int i = 0; i < nevSorrend.size(); i++) {
-//					
-//        try {
-//			for(Event myEvent : PatternGen(1578290400000L + twoDaysInMilliSec * i, 1593561600000L, nevSorrend.size())){
-//				
-//			do {
-//				
-//				try {
-//					tempN++;
-//					if(myEvent.getId() == null) myEvent = service.events().insert(naptarak.get(nevSorrend.get(i)), myEvent).execute();
-//					tempN = 0;
-//					LOGGER.info("Event Created in: " +nevSorrend.get(i) + " , " + myEvent.getStart().getDateTime() + " EventId: " + myEvent.getId());
-//					//TimeUnit.MILLISECONDS.sleep(50); 
-//				} catch (GoogleJsonResponseException e) {
-//					System.out.println(e.getStatusCode());
-//					System.out.println(e.getMessage());
-//					if(e.getStatusCode() == 403) {
-//						int waitFor = 1000 * tempN;
-//						TimeUnit.MILLISECONDS.sleep(waitFor);
-//						LOGGER.info(e);
-//						LOGGER.info("Várakozás " + waitFor + "msec ideig.");
-//					}
-//				}
-//				catch (Exception e) {
-//					System.out.println(e);
-//					LOGGER.error(e);					
-//				}
-//					
-//			} while(tempN > 0);
-//					
-//			}
-//		} catch (Exception e) {
-//			System.out.println(e);
-//			LOGGER.error(e);
-//		}
-//        }
 
-        Scanner kbd = new Scanner (System.in);
-        
+
+
         try {
-        	System.out.println("Fiók: " + accName);
-        	System.out.printf("Ténylegesen töröljünk minden 'n' eseményt minden naptárból a következő naptárakból: ");
-        	for (String nevOut : nevSorrend) {
-        		System.out.printf("%s ",nevOut);
-        	}
-        	System.out.printf("? (i / n) ");
-        	String answer = kbd.nextLine();
-        	if(answer.equals("i")) deleteWholeHalfYear(service, naptarak, nevSorrend,1578290400000L,1593561600000L);
-        	else {
-        		System.out.println("Megszakítás.");
-        		System.exit(0);
-        	}
+			//askToDelete(accName, service, naptarak, nevSorrend, startTime, endTime);
 		} catch (Exception e) {
-			System.out.println(e);
-			LOGGER.error(e);
+			// TODO Auto-generated catch block
+			e.printStackTrace();
 		}
         
 
